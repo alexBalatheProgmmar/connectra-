@@ -1,0 +1,6 @@
+{
+  "name": "Connectra",
+  "description": "Native Android Capsule App for Connectra - modern messaging web application shell",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
