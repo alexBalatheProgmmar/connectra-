@@ -48,6 +48,7 @@ fun ConnectraApp() {
   val isOnline by networkMonitor.isOnline.collectAsState(initial = networkMonitor.isCurrentlyOnline())
 
   var showSplash by remember { mutableStateOf(true) }
+  var isLocked by remember { mutableStateOf(true) }
   var webViewRef by remember { mutableStateOf<WebView?>(null) }
   var progress by remember { mutableFloatStateOf(0f) }
   var isPageError by remember { mutableStateOf(false) }
@@ -145,6 +146,16 @@ fun ConnectraApp() {
             } else {
               Toast.makeText(context, "Still offline. Please check your network.", Toast.LENGTH_SHORT).show()
             }
+          },
+          modifier = Modifier.fillMaxSize()
+        )
+      }
+
+      // Biometric Lock Screen overlay
+      if (!showSplash && isLocked) {
+        BiometricLockScreen(
+          onUnlocked = {
+            isLocked = false
           },
           modifier = Modifier.fillMaxSize()
         )
