@@ -104,7 +104,6 @@ fun ConnectraApp() {
         modifier = Modifier.fillMaxSize()
       ) {
         ConnectraWebView(
-          webView = webViewRef ?: remember { WebView(context) },
           isOnline = isOnline,
           onPageError = { isError ->
             isPageError = isError

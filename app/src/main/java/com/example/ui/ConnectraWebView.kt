@@ -13,6 +13,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
+import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -24,6 +25,7 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -56,7 +58,6 @@ const val BASE_URL = "https://connectra-app.lovable.app/chats"
 
 @Composable
 fun ConnectraWebView(
-  webView: WebView,
   isOnline: Boolean,
   onPageError: (Boolean) -> Unit,
   onProgressChanged: (Float) -> Unit,
@@ -66,26 +67,74 @@ fun ConnectraWebView(
   val context = LocalContext.current
   var filePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
   var pendingPermissionRequest by remember { mutableStateOf<PermissionRequest?>(null) }
-  var cameraImageUri by remember { mutableStateOf<Uri?>(null) }
   var customView by remember { mutableStateOf<View?>(null) }
   var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
-  // File chooser activity launcher
+  // Modern PickVisualMedia launcher for single photo/video picking
+  val pickVisualMediaLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.PickVisualMedia()
+  ) { uri: Uri? ->
+    val callback = filePathCallback
+    filePathCallback = null
+    if (callback != null) {
+      try {
+        val results = if (uri != null) arrayOf(uri) else null
+        callback.onReceiveValue(results)
+      } catch (_: Exception) {
+        try {
+          callback.onReceiveValue(null)
+        } catch (_: Exception) {}
+      }
+    }
+  }
+
+  // Modern PickMultipleVisualMedia launcher for multiple photos/videos picking
+  val pickMultipleVisualMediaLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.PickMultipleVisualMedia()
+  ) { uris: List<Uri> ->
+    val callback = filePathCallback
+    filePathCallback = null
+    if (callback != null) {
+      try {
+        val results = if (uris.isNotEmpty()) uris.toTypedArray() else null
+        callback.onReceiveValue(results)
+      } catch (_: Exception) {
+        try {
+          callback.onReceiveValue(null)
+        } catch (_: Exception) {}
+      }
+    }
+  }
+
+  // Fallback / General file chooser activity launcher
   val fileChooserLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.StartActivityForResult()
   ) { result ->
-    if (filePathCallback == null) return@rememberLauncherForActivityResult
-    val results: Array<Uri>? = if (result.resultCode == Activity.RESULT_OK) {
-      result.data?.data?.let { arrayOf(it) }
-        ?: result.data?.clipData?.let { clipData ->
-          Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
-        }
-        ?: cameraImageUri?.let { arrayOf(it) }
-    } else {
-      null
-    }
-    filePathCallback?.onReceiveValue(results)
+    val callback = filePathCallback
     filePathCallback = null
+
+    if (callback != null) {
+      try {
+        var results: Array<Uri>? = null
+        if (result.resultCode == Activity.RESULT_OK) {
+          results = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+          if (results == null && result.data != null) {
+            result.data?.data?.let { uri ->
+              results = arrayOf(uri)
+            } ?: result.data?.clipData?.let { clipData ->
+              if (clipData.itemCount > 0) {
+                results = Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
+              }
+            }
+          }
+        }
+        callback.onReceiveValue(results)
+      } catch (e: Exception) {
+        try {
+          callback.onReceiveValue(null)
+        } catch (_: Exception) {}
+      }
+    }
   }
 
   // Permission request launcher for WebRTC / Camera & Microphone
@@ -94,25 +143,35 @@ fun ConnectraWebView(
   ) { permissions ->
     val granted = permissions.values.all { it }
     pendingPermissionRequest?.let { request ->
-      if (granted) {
-        request.grant(request.resources)
-      } else {
-        request.deny()
-      }
+      try {
+        if (granted) {
+          request.grant(request.resources)
+        } else {
+          request.deny()
+        }
+      } catch (_: Exception) {}
       pendingPermissionRequest = null
     }
   }
 
   DisposableEffect(Unit) {
     onDispose {
-      CookieManager.getInstance().flush()
+      if (filePathCallback != null) {
+        try {
+          filePathCallback?.onReceiveValue(null)
+        } catch (_: Exception) {}
+        filePathCallback = null
+      }
+      try {
+        CookieManager.getInstance().flush()
+      } catch (_: Exception) {}
     }
   }
 
   Box(modifier = modifier.fillMaxSize()) {
     AndroidView(
       factory = { ctx ->
-        webView.apply {
+        WebView(ctx).apply {
           layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
@@ -121,25 +180,29 @@ fun ConnectraWebView(
           settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            databaseEnabled = true
             allowFileAccess = true
             allowContentAccess = true
             mediaPlaybackRequiresUserGesture = false
             setGeolocationEnabled(true)
+            javaScriptCanOpenWindowsAutomatically = true
+            setSupportMultipleWindows(false)
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             useWideViewPort = true
             loadWithOverviewMode = true
             builtInZoomControls = false
             displayZoomControls = false
-            userAgentString = userAgentString + " ConnectraAndroidApp/1.0"
+            val currentUa = userAgentString ?: ""
+            if (!currentUa.contains("ConnectraAndroidApp")) {
+              userAgentString = "$currentUa ConnectraAndroidApp/1.0"
+            }
           }
 
           // Setup Cookies
-          CookieManager.getInstance().apply {
-            setAcceptCookie(true)
-            setAcceptThirdPartyCookies(webView, true)
-          }
+          try {
+            CookieManager.getInstance().setAcceptCookie(true)
+            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+          } catch (_: Exception) {}
 
           webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -151,24 +214,110 @@ fun ConnectraWebView(
               filePathCallbackParam: ValueCallback<Array<Uri>>?,
               fileChooserParams: FileChooserParams?
             ): Boolean {
-              filePathCallback?.onReceiveValue(null)
+              // Cancel any existing pending callback to avoid Chromium native callback error
+              if (filePathCallback != null) {
+                try {
+                  filePathCallback?.onReceiveValue(null)
+                } catch (_: Exception) {}
+                filePathCallback = null
+              }
               filePathCallback = filePathCallbackParam
 
-              // Create intent for file selection / camera capture
-              val contentSelectionIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+              val acceptTypes = fileChooserParams?.acceptTypes.orEmpty()
+              val isMultiple = fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+
+              val isImageOnly = acceptTypes.isNotEmpty() && acceptTypes.any { type ->
+                type.contains("image", ignoreCase = true) || type.contains("jpg", ignoreCase = true) || type.contains("png", ignoreCase = true) || type.contains("jpeg", ignoreCase = true)
+              } && acceptTypes.none { type ->
+                type.contains("video", ignoreCase = true) || type == "*/*" || type == "application/*"
+              }
+
+              val isVideoOnly = acceptTypes.isNotEmpty() && acceptTypes.any { type ->
+                type.contains("video", ignoreCase = true) || type.contains("mp4", ignoreCase = true)
+              } && acceptTypes.none { type ->
+                type.contains("image", ignoreCase = true) || type == "*/*"
+              }
+
+              val isPhotoOrVideoMedia = isImageOnly || isVideoOnly || (acceptTypes.isNotEmpty() && acceptTypes.any { type ->
+                type.contains("image", ignoreCase = true) || type.contains("video", ignoreCase = true)
+              })
+
+              // 1. If web page specifically requested image or video media, launch ActivityResultContracts.PickVisualMedia
+              if (isPhotoOrVideoMedia) {
+                val mediaType = when {
+                  isImageOnly -> ActivityResultContracts.PickVisualMedia.ImageOnly
+                  isVideoOnly -> ActivityResultContracts.PickVisualMedia.VideoOnly
+                  else -> ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                }
+                try {
+                  if (isMultiple) {
+                    pickMultipleVisualMediaLauncher.launch(PickVisualMediaRequest(mediaType))
+                  } else {
+                    pickVisualMediaLauncher.launch(PickVisualMediaRequest(mediaType))
+                  }
+                  return true
+                } catch (_: Exception) {
+                  // Fall back to general file launchers below
+                }
+              }
+
+              // 2. Fallback / General Files (PDFs, Docs, Images, Any files)
+              val mimeType = sanitizeMimeType(acceptTypes)
+              val validMimes = parseValidMimeTypes(acceptTypes)
+
+              val candidateIntents = mutableListOf<Intent>()
+
+              // Intent A: WebChromeClient native built-in intent if available
+              try {
+                fileChooserParams?.createIntent()?.let { candidateIntents.add(it) }
+              } catch (_: Exception) {}
+
+              // Intent B: ACTION_GET_CONTENT
+              candidateIntents.add(Intent(Intent.ACTION_GET_CONTENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
+                type = mimeType
+                if (validMimes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, validMimes)
+                if (isMultiple) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+              })
+
+              // Intent C: ACTION_PICK for MediaStore
+              candidateIntents.add(Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
+                type = if (mimeType.startsWith("image/")) mimeType else "image/*"
+                if (isMultiple) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+              })
+
+              // Intent D: ACTION_OPEN_DOCUMENT (SAF)
+              candidateIntents.add(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = mimeType
+                if (validMimes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, validMimes)
+                if (isMultiple) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+              })
+
+              // Intent E: Ultimate fallback ACTION_GET_CONTENT */*
+              candidateIntents.add(Intent(Intent.ACTION_GET_CONTENT).apply {
                 type = "*/*"
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+              })
+
+              // Try launching candidate intents until one succeeds
+              for (intent in candidateIntents) {
+                try {
+                  fileChooserLauncher.launch(intent)
+                  return true
+                } catch (_: Exception) {}
+                try {
+                  val chooserIntent = Intent.createChooser(intent, "Select File or Photo")
+                  fileChooserLauncher.launch(chooserIntent)
+                  return true
+                } catch (_: Exception) {}
               }
 
-              val intentArray = arrayOf<Intent>()
-              val chooserIntent = Intent(Intent.ACTION_CHOOSER).apply {
-                putExtra(Intent.EXTRA_INTENT, contentSelectionIntent)
-                putExtra(Intent.EXTRA_TITLE, "Select File or Media")
-                putExtra(Intent.EXTRA_INITIAL_INTENTS, intentArray)
-              }
-
-              fileChooserLauncher.launch(chooserIntent)
+              // If everything fails, safely clear callback and notify user
+              try {
+                filePathCallback?.onReceiveValue(null)
+              } catch (_: Exception) {}
+              filePathCallback = null
+              Toast.makeText(context, "No app available to choose files", Toast.LENGTH_SHORT).show()
               return true
             }
 
@@ -187,7 +336,9 @@ fun ConnectraWebView(
               }
 
               if (requiredPermissions.isEmpty()) {
-                request.grant(requestedResources)
+                try {
+                  request.grant(requestedResources)
+                } catch (_: Exception) {}
                 return
               }
 
@@ -196,7 +347,9 @@ fun ConnectraWebView(
               }
 
               if (notGranted.isEmpty()) {
-                request.grant(requestedResources)
+                try {
+                  request.grant(requestedResources)
+                } catch (_: Exception) {}
               } else {
                 pendingPermissionRequest = request
                 permissionLauncher.launch(notGranted.toTypedArray())
@@ -209,7 +362,9 @@ fun ConnectraWebView(
             }
 
             override fun onHideCustomView() {
-              customViewCallback?.onCustomViewHidden()
+              try {
+                customViewCallback?.onCustomViewHidden()
+              } catch (_: Exception) {}
               customView = null
               customViewCallback = null
             }
@@ -251,7 +406,9 @@ fun ConnectraWebView(
 
             override fun onPageFinished(view: WebView?, url: String?) {
               super.onPageFinished(view, url)
-              CookieManager.getInstance().flush()
+              try {
+                CookieManager.getInstance().flush()
+              } catch (_: Exception) {}
             }
 
             override fun onReceivedError(
@@ -288,15 +445,10 @@ fun ConnectraWebView(
           }
 
           onWebViewCreated(this)
-
-          if (url == null) {
-            loadUrl(BASE_URL)
-          }
+          loadUrl(BASE_URL)
         }
       },
-      update = { view ->
-        // Active updates if needed
-      },
+      update = { _ -> },
       modifier = Modifier
         .fillMaxSize()
         .testTag("connectra_webview")
@@ -312,9 +464,40 @@ fun ConnectraWebView(
   }
 }
 
+private fun sanitizeMimeType(acceptTypes: Array<out String>?): String {
+  if (acceptTypes.isNullOrEmpty()) return "*/*"
+  val first = acceptTypes.firstOrNull { !it.isNullOrBlank() } ?: return "*/*"
+  if (first.contains("/")) return first
+  if (first.startsWith(".")) {
+    val ext = first.removePrefix(".")
+    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.lowercase())
+    if (!mime.isNullOrBlank()) return mime
+  }
+  return "*/*"
+}
+
+private fun parseValidMimeTypes(acceptTypes: Array<out String>?): Array<String> {
+  if (acceptTypes.isNullOrEmpty()) return emptyArray()
+  val list = mutableListOf<String>()
+  for (type in acceptTypes) {
+    if (type.isNullOrBlank()) continue
+    if (type.contains("/")) {
+      list.add(type)
+    } else if (type.startsWith(".")) {
+      val ext = type.removePrefix(".")
+      val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.lowercase())
+      if (!mime.isNullOrBlank()) {
+        list.add(mime)
+      }
+    }
+  }
+  return list.distinct().toTypedArray()
+}
+
 // Utility object for file name guessing
 private object URLUtil {
   fun guessFileName(url: String, contentDisposition: String?, mimeType: String?): String {
     return android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType)
   }
 }
+

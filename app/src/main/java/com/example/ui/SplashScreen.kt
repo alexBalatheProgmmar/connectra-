@@ -30,6 +30,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -102,6 +103,7 @@ fun SplashScreen(
         Image(
           painter = painterResource(id = R.drawable.ic_connectra_logo),
           contentDescription = "Connectra Logo",
+          contentScale = ContentScale.Crop,
           modifier = Modifier.fillMaxSize()
         )
       }
