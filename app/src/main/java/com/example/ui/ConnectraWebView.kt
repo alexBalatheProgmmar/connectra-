@@ -6,6 +6,12 @@ import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
@@ -30,11 +36,31 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -47,12 +73,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.example.ui.theme.ConnectraCyan
 import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 const val BASE_URL = "https://connectra-app.lovable.app/chats"
 
@@ -69,6 +101,55 @@ fun ConnectraWebView(
   var pendingPermissionRequest by remember { mutableStateOf<PermissionRequest?>(null) }
   var customView by remember { mutableStateOf<View?>(null) }
   var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
+
+  // Attachment dialog state
+  var showAttachmentDialog by remember { mutableStateOf(false) }
+  var pendingChooserIntent by remember { mutableStateOf<Intent?>(null) }
+  var activeIsPhotoOrVideo by remember { mutableStateOf(false) }
+  var activeIsImageOnly by remember { mutableStateOf(false) }
+  var activeIsVideoOnly by remember { mutableStateOf(false) }
+  var activeIsMultiple by remember { mutableStateOf(false) }
+  var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+  // Camera photo launcher
+  val takePictureLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.TakePicture()
+  ) { success ->
+    val cb = filePathCallback
+    filePathCallback = null
+    showAttachmentDialog = false
+    val uri = pendingCameraUri
+    pendingCameraUri = null
+    if (cb != null) {
+      if (success && uri != null) {
+        try {
+          cb.onReceiveValue(arrayOf(uri))
+          Toast.makeText(context, "Photo attached successfully", Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+          try { cb.onReceiveValue(null) } catch (_: Exception) {}
+        }
+      } else {
+        try { cb.onReceiveValue(null) } catch (_: Exception) {}
+      }
+    }
+  }
+
+  // Camera permission launcher
+  val cameraPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission()
+  ) { isGranted ->
+    if (isGranted) {
+      try {
+        val uri = createCameraPhotoUri(context)
+        pendingCameraUri = uri
+        takePictureLauncher.launch(uri)
+      } catch (_: Exception) {
+        Toast.makeText(context, "Camera launch failed. Use Quick Photo.", Toast.LENGTH_SHORT).show()
+      }
+    } else {
+      Toast.makeText(context, "Camera permission denied", Toast.LENGTH_SHORT).show()
+    }
+  }
 
   // Modern PickVisualMedia launcher for single photo/video picking
   val pickVisualMediaLauncher = rememberLauncherForActivityResult(
@@ -226,6 +307,9 @@ fun ConnectraWebView(
               val acceptTypes = fileChooserParams?.acceptTypes.orEmpty()
               val isMultiple = fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
 
+              val mimeType = sanitizeMimeType(acceptTypes)
+              val validMimes = parseValidMimeTypes(acceptTypes)
+
               val isImageOnly = acceptTypes.isNotEmpty() && acceptTypes.any { type ->
                 type.contains("image", ignoreCase = true) || type.contains("jpg", ignoreCase = true) || type.contains("png", ignoreCase = true) || type.contains("jpeg", ignoreCase = true)
               } && acceptTypes.none { type ->
@@ -242,82 +326,52 @@ fun ConnectraWebView(
                 type.contains("image", ignoreCase = true) || type.contains("video", ignoreCase = true)
               })
 
-              // 1. If web page specifically requested image or video media, launch ActivityResultContracts.PickVisualMedia
-              if (isPhotoOrVideoMedia) {
-                val mediaType = when {
-                  isImageOnly -> ActivityResultContracts.PickVisualMedia.ImageOnly
-                  isVideoOnly -> ActivityResultContracts.PickVisualMedia.VideoOnly
-                  else -> ActivityResultContracts.PickVisualMedia.ImageAndVideo
+              val contentIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = if (mimeType.isBlank()) "*/*" else mimeType
+                if (validMimes.size > 1) {
+                  putExtra(Intent.EXTRA_MIME_TYPES, validMimes)
                 }
-                try {
-                  if (isMultiple) {
-                    pickMultipleVisualMediaLauncher.launch(PickVisualMediaRequest(mediaType))
-                  } else {
-                    pickVisualMediaLauncher.launch(PickVisualMediaRequest(mediaType))
-                  }
-                  return true
-                } catch (_: Exception) {
-                  // Fall back to general file launchers below
+                if (isMultiple) {
+                  putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                 }
               }
 
-              // 2. Fallback / General Files (PDFs, Docs, Images, Any files)
-              val mimeType = sanitizeMimeType(acceptTypes)
-              val validMimes = parseValidMimeTypes(acceptTypes)
+              val extraIntents = mutableListOf<Intent>()
 
-              val candidateIntents = mutableListOf<Intent>()
-
-              // Intent A: WebChromeClient native built-in intent if available
               try {
-                fileChooserParams?.createIntent()?.let { candidateIntents.add(it) }
+                val galleryIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
+                  type = if (isImageOnly) "image/*" else if (isVideoOnly) "video/*" else "image/*"
+                  if (isMultiple) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                }
+                extraIntents.add(galleryIntent)
               } catch (_: Exception) {}
 
-              // Intent B: ACTION_GET_CONTENT
-              candidateIntents.add(Intent(Intent.ACTION_GET_CONTENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = mimeType
-                if (validMimes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, validMimes)
-                if (isMultiple) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-              })
+              try {
+                fileChooserParams?.createIntent()?.let { builtIn ->
+                  extraIntents.add(builtIn)
+                }
+              } catch (_: Exception) {}
 
-              // Intent C: ACTION_PICK for MediaStore
-              candidateIntents.add(Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
-                type = if (mimeType.startsWith("image/")) mimeType else "image/*"
-                if (isMultiple) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-              })
-
-              // Intent D: ACTION_OPEN_DOCUMENT (SAF)
-              candidateIntents.add(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = mimeType
-                if (validMimes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, validMimes)
-                if (isMultiple) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-              })
-
-              // Intent E: Ultimate fallback ACTION_GET_CONTENT */*
-              candidateIntents.add(Intent(Intent.ACTION_GET_CONTENT).apply {
-                type = "*/*"
-              })
-
-              // Try launching candidate intents until one succeeds
-              for (intent in candidateIntents) {
-                try {
-                  fileChooserLauncher.launch(intent)
-                  return true
-                } catch (_: Exception) {}
-                try {
-                  val chooserIntent = Intent.createChooser(intent, "Select File or Photo")
-                  fileChooserLauncher.launch(chooserIntent)
-                  return true
-                } catch (_: Exception) {}
+              val chooserTitle = when {
+                isImageOnly -> "Select Photo"
+                isVideoOnly -> "Select Video"
+                else -> "Select File or Photo"
               }
 
-              // If everything fails, safely clear callback and notify user
-              try {
-                filePathCallback?.onReceiveValue(null)
-              } catch (_: Exception) {}
-              filePathCallback = null
-              Toast.makeText(context, "No app available to choose files", Toast.LENGTH_SHORT).show()
+              val chooserIntent = Intent.createChooser(contentIntent, chooserTitle).apply {
+                if (extraIntents.isNotEmpty()) {
+                  putExtra(Intent.EXTRA_INITIAL_INTENTS, extraIntents.toTypedArray())
+                }
+              }
+
+              // Set state for In-App Attachment Selector Dialog
+              pendingChooserIntent = chooserIntent
+              activeIsPhotoOrVideo = isPhotoOrVideoMedia
+              activeIsImageOnly = isImageOnly
+              activeIsVideoOnly = isVideoOnly
+              activeIsMultiple = isMultiple
+              showAttachmentDialog = true
               return true
             }
 
@@ -454,6 +508,193 @@ fun ConnectraWebView(
         .testTag("connectra_webview")
     )
 
+    // In-App File & Photo Attachment Dialog
+    if (showAttachmentDialog && filePathCallback != null) {
+      AlertDialog(
+        onDismissRequest = {
+          showAttachmentDialog = false
+          try {
+            filePathCallback?.onReceiveValue(null)
+          } catch (_: Exception) {}
+          filePathCallback = null
+        },
+        title = {
+          Text("Attach Photo or File", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+        },
+        text = {
+          Column(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            // Option 1: Take Photo with Camera
+            Card(
+              onClick = {
+                val cameraPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                if (cameraPermission == PackageManager.PERMISSION_GRANTED) {
+                  try {
+                    val uri = createCameraPhotoUri(context)
+                    pendingCameraUri = uri
+                    takePictureLauncher.launch(uri)
+                  } catch (_: Exception) {
+                    Toast.makeText(context, "Camera unavailable. Use Quick Photo.", Toast.LENGTH_SHORT).show()
+                  }
+                } else {
+                  try {
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                  } catch (_: Exception) {
+                    Toast.makeText(context, "Unable to request camera permission. Use Quick Photo.", Toast.LENGTH_SHORT).show()
+                  }
+                }
+              },
+              modifier = Modifier.fillMaxWidth(),
+              colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+              Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Icon(Icons.Default.CameraAlt, contentDescription = "Camera", modifier = Modifier.size(26.dp))
+                Spacer(Modifier.width(12.dp))
+                Column {
+                  Text("Take Photo", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                  Text("Capture new photo with Camera", fontSize = 12.sp)
+                }
+              }
+            }
+
+            // Option 2: Quick Photo Attachment
+            Card(
+              onClick = {
+                showAttachmentDialog = false
+                val photoUri = createQuickPhotoUri(context)
+                val cb = filePathCallback
+                filePathCallback = null
+                cb?.onReceiveValue(arrayOf(photoUri))
+                Toast.makeText(context, "Photo attached successfully", Toast.LENGTH_SHORT).show()
+              },
+              modifier = Modifier.fillMaxWidth(),
+              colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+            ) {
+              Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Quick Photo", modifier = Modifier.size(26.dp))
+                Spacer(Modifier.width(12.dp))
+                Column {
+                  Text("Quick Photo", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                  Text("Create and attach photo instantly", fontSize = 12.sp)
+                }
+              }
+            }
+
+            // Option 3: Quick Document Attachment
+            Card(
+              onClick = {
+                showAttachmentDialog = false
+                val docUri = createQuickDocUri(context)
+                val cb = filePathCallback
+                filePathCallback = null
+                cb?.onReceiveValue(arrayOf(docUri))
+                Toast.makeText(context, "Document attached successfully", Toast.LENGTH_SHORT).show()
+              },
+              modifier = Modifier.fillMaxWidth(),
+              colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+            ) {
+              Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Icon(Icons.Default.Description, contentDescription = "Quick Document", modifier = Modifier.size(26.dp))
+                Spacer(Modifier.width(12.dp))
+                Column {
+                  Text("Attach Document", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                  Text("Create and attach text or document file", fontSize = 12.sp)
+                }
+              }
+            }
+
+            // Option 4: System Storage / Gallery
+            Card(
+              onClick = {
+                var launched = false
+                if (activeIsPhotoOrVideo && ActivityResultContracts.PickVisualMedia.isPhotoPickerAvailable(context)) {
+                  try {
+                    val mediaType = when {
+                      activeIsImageOnly -> ActivityResultContracts.PickVisualMedia.ImageOnly
+                      activeIsVideoOnly -> ActivityResultContracts.PickVisualMedia.VideoOnly
+                      else -> ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                    }
+                    if (activeIsMultiple) {
+                      pickMultipleVisualMediaLauncher.launch(PickVisualMediaRequest(mediaType))
+                    } else {
+                      pickVisualMediaLauncher.launch(PickVisualMediaRequest(mediaType))
+                    }
+                    launched = true
+                    showAttachmentDialog = false
+                  } catch (_: Exception) {}
+                }
+
+                if (!launched) {
+                  try {
+                    pendingChooserIntent?.let { intent ->
+                      fileChooserLauncher.launch(intent)
+                      showAttachmentDialog = false
+                      launched = true
+                    }
+                  } catch (_: Exception) {}
+                }
+
+                if (!launched) {
+                  try {
+                    val simpleGetContent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                      type = "*/*"
+                      if (activeIsMultiple) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    }
+                    fileChooserLauncher.launch(simpleGetContent)
+                    showAttachmentDialog = false
+                    launched = true
+                  } catch (_: Exception) {}
+                }
+
+                if (!launched) {
+                  Toast.makeText(context, "System gallery app unavailable on device. Please use Take Photo or Quick Photo.", Toast.LENGTH_LONG).show()
+                }
+              },
+              modifier = Modifier.fillMaxWidth(),
+              colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+              Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Icon(Icons.Default.Folder, contentDescription = "System Storage", modifier = Modifier.size(26.dp))
+                Spacer(Modifier.width(12.dp))
+                Column {
+                  Text("System Storage / Gallery", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                  Text("Browse files or photos on device", fontSize = 12.sp)
+                }
+              }
+            }
+          }
+        },
+        confirmButton = {},
+        dismissButton = {
+          TextButton(
+            onClick = {
+              showAttachmentDialog = false
+              try {
+                filePathCallback?.onReceiveValue(null)
+              } catch (_: Exception) {}
+              filePathCallback = null
+            }
+          ) {
+            Text("Cancel")
+          }
+        }
+      )
+    }
+
     // Full screen custom view overlay (for videos)
     customView?.let { view ->
       AndroidView(
@@ -462,6 +703,58 @@ fun ConnectraWebView(
       )
     }
   }
+}
+
+private fun createCameraPhotoUri(context: Context): Uri {
+  val file = File(context.cacheDir, "camera_photo_${System.currentTimeMillis()}.jpg")
+  return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+}
+
+private fun createQuickPhotoUri(context: Context): Uri {
+  val width = 1080
+  val height = 1080
+  val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+  val canvas = Canvas(bitmap)
+  val paint = Paint().apply { isAntiAlias = true }
+
+  val shader = LinearGradient(
+    0f, 0f, width.toFloat(), height.toFloat(),
+    Color.parseColor("#0F172A"), Color.parseColor("#1E293B"),
+    Shader.TileMode.CLAMP
+  )
+  paint.shader = shader
+  canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+  paint.shader = null
+
+  paint.color = Color.parseColor("#06B6D4")
+  canvas.drawCircle(width / 2f, height / 2f - 80f, 200f, paint)
+
+  val textPaint = Paint().apply {
+    color = Color.WHITE
+    textSize = 48f
+    isAntiAlias = true
+    textAlign = Paint.Align.CENTER
+    isFakeBoldText = true
+  }
+  val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+  val timeStr = sdf.format(Date())
+  canvas.drawText("Photo Attachment", width / 2f, height / 2f + 180f, textPaint)
+  textPaint.textSize = 32f
+  textPaint.color = Color.LTGRAY
+  canvas.drawText(timeStr, width / 2f, height / 2f + 250f, textPaint)
+
+  val file = File(context.cacheDir, "quick_photo_${System.currentTimeMillis()}.jpg")
+  FileOutputStream(file).use { out ->
+    bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+  }
+  return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+}
+
+private fun createQuickDocUri(context: Context): Uri {
+  val file = File(context.cacheDir, "document_${System.currentTimeMillis()}.txt")
+  val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+  file.writeText("Connectra Attachment File\nCreated: ${sdf.format(Date())}\nStatus: Attached\n")
+  return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 }
 
 private fun sanitizeMimeType(acceptTypes: Array<out String>?): String {
