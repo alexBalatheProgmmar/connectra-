@@ -17,10 +17,12 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.view.View
 import android.view.ViewGroup
+import android.util.Base64
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
+import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -30,6 +32,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -110,6 +113,24 @@ fun ConnectraWebView(
   var activeIsVideoOnly by remember { mutableStateOf(false) }
   var activeIsMultiple by remember { mutableStateOf(false) }
   var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+  // Handle back gesture when fullscreen video is open
+  BackHandler(enabled = customView != null) {
+    try {
+      customViewCallback?.onCustomViewHidden()
+    } catch (_: Exception) {}
+    customView = null
+    customViewCallback = null
+  }
+
+  // Handle back gesture when attachment dialog is open
+  BackHandler(enabled = showAttachmentDialog) {
+    showAttachmentDialog = false
+    try {
+      filePathCallback?.onReceiveValue(null)
+    } catch (_: Exception) {}
+    filePathCallback = null
+  }
 
   // Camera photo launcher
   val takePictureLauncher = rememberLauncherForActivityResult(
@@ -478,23 +499,57 @@ fun ConnectraWebView(
 
           setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
             try {
+              if (url.startsWith("data:")) {
+                // Handle inline data URIs (e.g., base64 files/images)
+                try {
+                  val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
+                  val base64Data = url.substringAfter(",")
+                  val fileBytes = Base64.decode(base64Data, Base64.DEFAULT)
+                  val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                  val file = File(downloadsDir, fileName)
+                  FileOutputStream(file).use { it.write(fileBytes) }
+                  Toast.makeText(ctx, "Saved to Downloads: $fileName", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                  Toast.makeText(ctx, "Failed to save file", Toast.LENGTH_SHORT).show()
+                }
+                return@setDownloadListener
+              }
+
+              val fileName = URLUtil.guessFileName(url, contentDisposition, mimetype)
               val request = DownloadManager.Request(Uri.parse(url)).apply {
-                setMimeType(mimetype)
-                addRequestHeader("User-Agent", userAgent)
-                addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url))
-                setTitle(URLUtil.guessFileName(url, contentDisposition, mimetype))
+                if (!mimetype.isNullOrBlank()) {
+                  setMimeType(mimetype)
+                }
+                val cookies = CookieManager.getInstance().getCookie(url)
+                if (!cookies.isNullOrEmpty()) {
+                  addRequestHeader("Cookie", cookies)
+                }
+                if (!userAgent.isNullOrEmpty()) {
+                  addRequestHeader("User-Agent", userAgent)
+                }
+                setTitle(fileName)
                 setDescription("Downloading file from Connectra...")
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setAllowedOverMetered(true)
+                setAllowedOverRoaming(true)
                 setDestinationInExternalPublicDir(
                   Environment.DIRECTORY_DOWNLOADS,
-                  URLUtil.guessFileName(url, contentDisposition, mimetype)
+                  fileName
                 )
               }
               val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
               dm.enqueue(request)
-              Toast.makeText(ctx, "Download started...", Toast.LENGTH_SHORT).show()
+              Toast.makeText(ctx, "Downloading $fileName...", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
-              Toast.makeText(ctx, "Failed to download file", Toast.LENGTH_SHORT).show()
+              // Fallback to native system intent launcher
+              try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                  addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                ctx.startActivity(intent)
+              } catch (_: Exception) {
+                Toast.makeText(ctx, "Failed to download file", Toast.LENGTH_SHORT).show()
+              }
             }
           }
 

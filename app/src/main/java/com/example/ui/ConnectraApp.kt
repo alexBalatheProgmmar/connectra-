@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -63,8 +64,12 @@ fun ConnectraApp() {
     }
   }
 
-  // Handle double back to exit
+  // Custom system back-navigation handling for WebView page history navigation
   BackHandler(enabled = !showSplash) {
+    if (isLocked) {
+      activity?.finish()
+      return@BackHandler
+    }
     val webView = webViewRef
     if (webView != null && webView.canGoBack()) {
       webView.goBack()
@@ -82,7 +87,8 @@ fun ConnectraApp() {
   val pullToRefreshState = rememberPullToRefreshState()
 
   Scaffold(
-    contentWindowInsets = WindowInsets(0, 0, 0, 0),
+    containerColor = MaterialTheme.colorScheme.background,
+    contentWindowInsets = WindowInsets.safeDrawing,
     modifier = Modifier.fillMaxSize()
   ) { innerPadding ->
     Box(
@@ -128,8 +134,7 @@ fun ConnectraApp() {
           modifier = Modifier
             .fillMaxWidth()
             .height(3.dp)
-            .align(Alignment.TopCenter)
-            .windowInsetsPadding(WindowInsets.statusBars),
+            .align(Alignment.TopCenter),
           color = ConnectraCyan,
           trackColor = Color.Transparent
         )
