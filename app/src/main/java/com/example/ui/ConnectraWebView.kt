@@ -96,6 +96,7 @@ fun ConnectraWebView(
   isOnline: Boolean,
   onPageError: (Boolean) -> Unit,
   onProgressChanged: (Float) -> Unit,
+  onScrollAtTopChanged: (Boolean) -> Unit = {},
   onWebViewCreated: (WebView) -> Unit,
   modifier: Modifier = Modifier
 ) {
@@ -279,9 +280,20 @@ fun ConnectraWebView(
             ViewGroup.LayoutParams.MATCH_PARENT
           )
 
+          // Hardware acceleration & performance settings for smooth scrolling
+          setLayerType(View.LAYER_TYPE_HARDWARE, null)
+          overScrollMode = View.OVER_SCROLL_NEVER
+          isVerticalScrollBarEnabled = false
+          isHorizontalScrollBarEnabled = false
+
+          setOnScrollChangeListener { _, _, scrollY, _, _ ->
+            onScrollAtTopChanged(scrollY <= 0)
+          }
+
           settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            databaseEnabled = true
             allowFileAccess = true
             allowContentAccess = true
             mediaPlaybackRequiresUserGesture = false
@@ -294,6 +306,9 @@ fun ConnectraWebView(
             loadWithOverviewMode = true
             builtInZoomControls = false
             displayZoomControls = false
+            offscreenPreRaster = true
+            setEnableSmoothTransition(true)
+
             val currentUa = userAgentString ?: ""
             if (!currentUa.contains("ConnectraAndroidApp")) {
               userAgentString = "$currentUa ConnectraAndroidApp/1.0"
@@ -483,6 +498,21 @@ fun ConnectraWebView(
               super.onPageFinished(view, url)
               try {
                 CookieManager.getInstance().flush()
+                view?.evaluateJavascript(
+                  """
+                  (function() {
+                    try {
+                      if (!document.getElementById('connectra-smooth-styles')) {
+                        var style = document.createElement('style');
+                        style.id = 'connectra-smooth-styles';
+                        style.innerHTML = 'html, body { scroll-behavior: smooth !important; -webkit-overflow-scrolling: touch !important; overscroll-behavior-y: contain !important; } * { -webkit-tap-highlight-color: transparent !important; }';
+                        document.head.appendChild(style);
+                      }
+                    } catch(e){}
+                  })();
+                  """.trimIndent(),
+                  null
+                )
               } catch (_: Exception) {}
             }
 

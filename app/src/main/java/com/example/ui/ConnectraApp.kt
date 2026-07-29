@@ -54,6 +54,7 @@ fun ConnectraApp() {
   var progress by remember { mutableFloatStateOf(0f) }
   var isPageError by remember { mutableStateOf(false) }
   var isRefreshing by remember { mutableStateOf(false) }
+  var isAtTop by remember { mutableStateOf(true) }
   var lastBackPressTime by remember { mutableLongStateOf(0L) }
 
   // Auto retry loading webview when internet becomes available
@@ -102,10 +103,12 @@ fun ConnectraApp() {
         isRefreshing = isRefreshing,
         state = pullToRefreshState,
         onRefresh = {
-          isRefreshing = true
-          isPageError = false
-          webViewRef?.reload()
-          isRefreshing = false
+          if (isAtTop) {
+            isRefreshing = true
+            isPageError = false
+            webViewRef?.reload()
+            isRefreshing = false
+          }
         },
         modifier = Modifier.fillMaxSize()
       ) {
@@ -120,6 +123,9 @@ fun ConnectraApp() {
               isRefreshing = false
             }
           },
+          onScrollAtTopChanged = { atTop ->
+            isAtTop = atTop
+          },
           onWebViewCreated = { wv ->
             webViewRef = wv
           },
@@ -127,18 +133,12 @@ fun ConnectraApp() {
         )
       }
 
-      // Top Progress Indicator
-      if (progress in 0.01f..0.99f && isOnline && !isPageError) {
-        LinearProgressIndicator(
-          progress = { progress },
-          modifier = Modifier
-            .fillMaxWidth()
-            .height(3.dp)
-            .align(Alignment.TopCenter),
-          color = ConnectraCyan,
-          trackColor = Color.Transparent
-        )
-      }
+      // Top Progress Indicator isolated from full-tree recomposition
+      TopProgressBar(
+        progressProvider = { progress },
+        isVisibleProvider = { progress in 0.01f..0.99f && isOnline && !isPageError },
+        modifier = Modifier.align(Alignment.TopCenter)
+      )
 
       // Offline Screen overlay
       if (!isOnline || isPageError) {
@@ -178,5 +178,23 @@ fun ConnectraApp() {
         )
       }
     }
+  }
+}
+
+@Composable
+private fun TopProgressBar(
+  progressProvider: () -> Float,
+  isVisibleProvider: () -> Boolean,
+  modifier: Modifier = Modifier
+) {
+  if (isVisibleProvider()) {
+    LinearProgressIndicator(
+      progress = progressProvider,
+      modifier = modifier
+        .fillMaxWidth()
+        .height(3.dp),
+      color = ConnectraCyan,
+      trackColor = Color.Transparent
+    )
   }
 }
